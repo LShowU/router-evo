@@ -1,0 +1,2 @@
+﻿# Public release safety
+**Do not commit:** `.env`, `token-stats/`, session logs, caches, checkpoints, backups, API keys, or local settings.
