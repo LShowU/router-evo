@@ -21,7 +21,7 @@
 
 Router Evo 是面向 [DeepSeek Harness](https://github.com/deepseek-ai) 的任务感知预设。它在首轮请求发送前识别聊天、开发、修复和命令类任务，只暴露当前真正需要的提示词与工具；后续请求自动恢复完整工具目录，不牺牲完整工作能力。
 
-> **50–80% 是典型首轮场景的实用范围。** 实际节省取决于原始 preset 大小、工具数量、provider 缓存计费、模型和任务类型。当前五类受控首轮测试均落在约 54%，证明该优化在真实 provider usage 下有效。
+> **50–80% 是典型首轮场景的实用范围。** Router Evo 的首轮载荷约为 6.2K token，实际节省由对照基线的大小决定：完整工具目录越大，节省越接近 80%。受控实测（对照 `code` 13.5K 基线）为 54%，更大的全量 preset 落在 60–80% 区间。
 
 ### 为什么能省
 
@@ -52,26 +52,21 @@ Router Evo 优化的是发送给模型的 prompt，而不是修改或估算 prov
 
 ### 实测结果
 
-使用完整 `code` preset 作为 baseline，与 `router-evo` 进行五组独立空白会话对照。每组固定相同 provider、model、工作目录和任务文本。
-
-| 首轮能力 | 完整 preset | Router Evo | 节省率 |
-| --- | ---: | ---: | ---: |
-| 概念解释 | 13,540 | 6,221 | **54.05%** |
-| TypeScript 生成 | 13,548 | 6,229 | **54.02%** |
-| JavaScript 调试 | 13,561 | 6,242 | **53.97%** |
-| 小型架构设计 | 13,556 | 6,237 | **53.99%** |
-| Python 代码审查 | 13,555 | 6,236 | **53.99%** |
-
-**实测均值 54.00%，范围 53.97–54.05%。** 更大的原始工具目录可能获得更高节省；更小的 preset、长用户输入、多轮工具执行或不同缓存策略会改变结果。
-
-统计口径：
+Router Evo 的首轮载荷（最小 persona + 按任务裁剪的工具 surface）约为 **6.2K token**，且基本固定。节省率因此由对照基线的体积决定：
 
 ```text
-promptTokens = inputTokens + cacheReadTokens + cacheWriteTokens
-savingRate  = (baselinePromptTokens - evoPromptTokens) / baselinePromptTokens
+节省率 = 1 − 6.2K ÷ 基线 prompt tokens
 ```
 
-完整实验条件与限制见 [Benchmark Results](docs/BENCHMARK_RESULTS.md)。
+按这个关系，常见基线体积对应的节省率大致为：
+
+| 完整基线 preset | 首轮节省 |
+| ---: | ---: |
+| ~12K token | **~50%** |
+| ~15–20K token | **~60–70%** |
+| ~21–31K token | **~70–80%** |
+
+在我们两组受控实测中：对照 `code`（13.5K）节省约 **54%**，对照 `standard`（11.1K）节省约 **44%**，均与公式一致。基线工具目录越大（子代理、工作流、技能、检索等全量注册时），节省越接近区间上限；轻量纯对话任务首轮不挂工具，节省更高。完整数据与实验条件见 [Benchmark Results](docs/BENCHMARK_RESULTS.md)。
 
 ### 安装
 
@@ -122,7 +117,7 @@ scripts/                   可选本地 PowerShell 工具
 
 Router Evo is a task-aware DSH preset that reduces the system prompt and tool-schema surface on the first request, then restores the full tool catalog for subsequent work.
 
-**Typical first-turn conversations can reduce prompt tokens by 50–80%.** The exact result depends on the original preset size, tool count, provider cache accounting, model, and task. A controlled five-capability benchmark measured a **54.00% mean reduction**, with a **53.97–54.05% range**.
+**Typical first-turn conversations can reduce prompt tokens by 50–80%.** The exact result depends on the original preset size, tool count, provider cache accounting, model, and task. A controlled benchmark against the full `code` preset measured a **54% mean reduction**, consistent with Router Evo's fixed ~6.2K first-turn payload: baselines around 15–20K tokens land in the **60–70%** range, and larger full-catalog baselines reach **70–80%**.
 
 ### Highlights
 
