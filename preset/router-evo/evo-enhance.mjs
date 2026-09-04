@@ -15,8 +15,7 @@
 
 import { createHash } from 'node:crypto'
 import { readFile, writeFile, stat, mkdir, rm, appendFile } from 'node:fs/promises'
-import { join, relative, resolve, dirname, basename } from 'node:path'
-import { homedir } from 'node:os'
+import { join, resolve, dirname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execSync } from 'node:child_process'
 
@@ -42,22 +41,49 @@ function estimateTokens(text) {
 
 async function recordTokenEvent(ev) {
   try {
-    const actualTokens = estimateTokens(ev.actualText || '')
-    const baselineTokens = Math.max(actualTokens, Number(ev.baselineTokens) || 0)
+    const outputEstimateTokens = estimateTokens(ev.actualText || '')
     const event = {
       timestamp: new Date().toISOString(),
+      kind: 'tool-event',
       sessionId: process.env.DSH_SESSION_ID || 'default',
       roundId: Number(process.env.DSH_ROUND_ID || 0) || 0,
       tool: ev.tool,
       operation: ev.operation || ev.tool,
       file: ev.file || '',
       cacheHit: !!ev.cacheHit,
-      actualTokens,
-      baselineTokens,
-      savedTokens: baselineTokens - actualTokens,
-      savingType: ev.savingType || (ev.baselineTokens ? 'estimated' : 'exact'),
+      outputEstimateTokens,
+      measurement: 'unavailable',
       reason: ev.reason || '',
     }
+    await mkdir(dirname(DEFAULT_STATS_PATH), { recursive: true })
+    await appendFile(DEFAULT_STATS_PATH, JSON.stringify(event) + '\n', 'utf8')
+  } catch {}
+}
+
+async function recordUsage(session, data) {
+  try {
+    const usage = data?.usage
+    if (!usage || !Number.isFinite(usage.inputTokens) || !Number.isFinite(usage.outputTokens)) return
+    const cacheReadTokens = Number(usage.cacheReadTokens) || 0
+    const cacheWriteTokens = Number(usage.cacheWriteTokens) || 0
+    const route = session.requestHeader?.()?.config || {}
+    const event = {
+      timestamp: new Date().toISOString(),
+      kind: 'llm-usage',
+      preset: 'router-evo',
+      provider: route.provider || null,
+      model: route.model || null,
+      sessionId: String(session.id),
+      turn: data.turn,
+      step: data.step,
+      inputTokens: usage.inputTokens,
+      cacheReadTokens,
+      cacheWriteTokens,
+      promptTokens: usage.inputTokens + cacheReadTokens + cacheWriteTokens,
+      outputTokens: usage.outputTokens,
+      reasoningTokens: Number(usage.reasoningTokens) || 0,
+    }
+    await mkdir(dirname(DEFAULT_STATS_PATH), { recursive: true })
     await appendFile(DEFAULT_STATS_PATH, JSON.stringify(event) + '\n', 'utf8')
   } catch {}
 }
@@ -71,6 +97,10 @@ export const name = 'evo-enhance'
 export const inject = ['tools', 'fs']
 
 export function apply(ctx) {
+  ctx.on('session/event', (session, event) => {
+    if (event.type === 'assistant/message') void recordUsage(session, event.data)
+  })
+
   const register = (tool) => {
     ctx.effect(() => ctx.tools.register(tool), `evo-enhance: ${tool.name}`)
   }
@@ -114,7 +144,7 @@ export function apply(ctx) {
           const head = lines.slice(0, 50).map((l, i) => `${i + 1}: ${l}`).join('\n')
           const tail = lines.slice(-30).map((l, i) => `${totalLines - 30 + i + 1}: ${l}`).join('\n')
           const output = `[LARGE FILE: ${totalLines} lines, ${info.size} bytes — head + tail shown]\n\n--- HEAD (lines 1-50) ---\n${head}\n\n--- TAIL (last 30 lines) ---\n${tail}`
-          await recordTokenEvent({ tool: 'evo_read', operation: 'large-head-tail', file: resolved, cacheHit: false, actualText: output, baselineTokens: Math.ceil(info.size / 3.5), reason: 'large-file-head-tail' })
+          await recordTokenEvent({ tool: 'evo_read', operation: 'large-head-tail', file: resolved, cacheHit: false, actualText: output, reason: 'large-file-head-tail' })
           return output
         }
 
@@ -132,7 +162,7 @@ export function apply(ctx) {
               size: cached.size,
               hint: '[CACHED] File unchanged since last read. Use skip_cache=true to force re-read.',
             })
-            await recordTokenEvent({ tool: 'evo_read', operation: 'cache-hit', file: resolved, cacheHit: true, actualText: output, baselineTokens: Math.ceil(info.size / 3.5), reason: 'unchanged-file-cache' })
+            await recordTokenEvent({ tool: 'evo_read', operation: 'cache-hit', file: resolved, cacheHit: true, actualText: output, reason: 'unchanged-file-cache' })
             return output
           }
         }
@@ -151,7 +181,7 @@ export function apply(ctx) {
         const result = selected.map((l, i) => `${offset + i}: ${l}`).join('\n')
         const header = `[${totalLines} lines total, showing ${offset}-${Math.min(offset + limit - 1, totalLines)}]`
         const output = `${header}\n${result}${totalLines > offset + limit - 1 ? '\n... (truncated)' : ''}`
-        await recordTokenEvent({ tool: 'evo_read', operation: 'read', file: resolved, cacheHit: false, actualText: output, baselineTokens: Math.ceil(info.size / 3.5), savingType: 'estimated', reason: 'partial-or-full-read' })
+        await recordTokenEvent({ tool: 'evo_read', operation: 'read', file: resolved, cacheHit: false, actualText: output, reason: 'partial-or-full-read' })
         return output
       } catch (error) {
         return `Error reading file: ${error.message}`
@@ -243,7 +273,7 @@ export function apply(ctx) {
               mode: 'fuzzy',
               hint: '[FUZZY] Matched ignoring trailing whitespace. Use evo_undo to restore.',
             })
-            await recordTokenEvent({ tool: 'evo_edit', operation: 'edit', file: resolved, cacheHit: false, actualText: fuzzyOutput, baselineTokens: estimateTokens(fuzzyOutput) + 60, savingType: 'estimated', reason: 'edit-with-checkpoint' })
+            await recordTokenEvent({ tool: 'evo_edit', operation: 'edit', file: resolved, cacheHit: false, actualText: fuzzyOutput, reason: 'edit-with-checkpoint' })
             return fuzzyOutput
           }
         }
@@ -272,7 +302,7 @@ export function apply(ctx) {
           mode: 'exact',
           hint: replaceAll ? `Replaced ${count} occurrences.` : 'Replaced 1 occurrence.',
         })
-        await recordTokenEvent({ tool: 'evo_edit', operation: 'edit', file: resolved, cacheHit: false, actualText: exactOutput, baselineTokens: estimateTokens(exactOutput) + 60, savingType: 'estimated', reason: 'edit-with-checkpoint' })
+        await recordTokenEvent({ tool: 'evo_edit', operation: 'edit', file: resolved, cacheHit: false, actualText: exactOutput, reason: 'edit-with-checkpoint' })
         return exactOutput
       } catch (error) {
         return `Error editing file: ${error.message}`
@@ -303,7 +333,7 @@ export function apply(ctx) {
         fileCache.delete(ck.path)
         checkpoints.delete(args.checkpoint_id)
         const undoOutput = JSON.stringify({ ok: true, restored: ck.path })
-        await recordTokenEvent({ tool: 'evo_undo', operation: 'undo', file: ck.path, cacheHit: true, actualText: undoOutput, baselineTokens: estimateTokens(undoOutput) + 120, savingType: 'estimated', reason: 'checkpoint-restore' })
+        await recordTokenEvent({ tool: 'evo_undo', operation: 'undo', file: ck.path, cacheHit: true, actualText: undoOutput, reason: 'checkpoint-restore' })
         return undoOutput
       } catch (error) {
         return `Error restoring checkpoint: ${error.message}`
@@ -355,7 +385,7 @@ export function apply(ctx) {
         if (output === 'files') {
           const files = [...new Set(lines.map(l => l.split(':')[0]))].slice(0, maxResults)
           const out = JSON.stringify({ mode: 'files', pattern, matchCount: files.length, files })
-          await recordTokenEvent({ tool: 'evo_grep', operation: 'grep-files', file: resolved, cacheHit: false, actualText: out, baselineTokens: estimateTokens(lines.join('\n')), savingType: 'estimated', reason: 'grep-files-mode' })
+          await recordTokenEvent({ tool: 'evo_grep', operation: 'grep-files', file: resolved, cacheHit: false, actualText: out, reason: 'grep-files-mode' })
           return out
         }
 
@@ -368,13 +398,13 @@ export function apply(ctx) {
           const files = Object.entries(counts).map(([file, matches]) => ({ file, matches }))
             .sort((a, b) => b.matches - a.matches).slice(0, maxResults)
           const out = JSON.stringify({ mode: 'count', pattern, totalMatches: lines.length, totalFiles: Object.keys(counts).length, files })
-          await recordTokenEvent({ tool: 'evo_grep', operation: 'grep-count', file: resolved, cacheHit: false, actualText: out, baselineTokens: estimateTokens(lines.join('\n')), savingType: 'estimated', reason: 'grep-count-mode' })
+          await recordTokenEvent({ tool: 'evo_grep', operation: 'grep-count', file: resolved, cacheHit: false, actualText: out, reason: 'grep-count-mode' })
           return out
         }
 
         if (output === 'full') {
           const out = lines.slice(0, maxResults).join('\n')
-          await recordTokenEvent({ tool: 'evo_grep', operation: 'grep-full', file: resolved, cacheHit: false, actualText: out, baselineTokens: estimateTokens(lines.join('\n')), savingType: 'estimated', reason: 'grep-full-mode' })
+          await recordTokenEvent({ tool: 'evo_grep', operation: 'grep-full', file: resolved, cacheHit: false, actualText: out, reason: 'grep-full-mode' })
           return out
         }
 
@@ -385,7 +415,7 @@ export function apply(ctx) {
           return `${file}:${lineNum}: ${text.length > 120 ? text.slice(0, 120) + '...' : text}`
         })
         const out = JSON.stringify({ mode: 'summary', pattern, totalMatches: lines.length, matches: summary, truncated: lines.length > maxResults })
-        await recordTokenEvent({ tool: 'evo_grep', operation: 'grep-summary', file: resolved, cacheHit: false, actualText: out, baselineTokens: estimateTokens(lines.join('\n')), savingType: 'estimated', reason: 'grep-summary-mode' })
+        await recordTokenEvent({ tool: 'evo_grep', operation: 'grep-summary', file: resolved, cacheHit: false, actualText: out, reason: 'grep-summary-mode' })
         return out
       } catch (error) {
         return `Error searching: ${error.message}`
@@ -434,7 +464,7 @@ export function apply(ctx) {
         } catch {}
 
         const out = JSON.stringify({ root, tree, config, git, fileCount: tree.filter(e => !e.endsWith('/')).length }, null, 2)
-        await recordTokenEvent({ tool: 'evo_map', operation: 'map', file: root, cacheHit: false, actualText: out, baselineTokens: Math.max(estimateTokens(out) * 3, 1200), savingType: 'estimated', reason: 'repo-map-vs-exploration' })
+        await recordTokenEvent({ tool: 'evo_map', operation: 'map', file: root, cacheHit: false, actualText: out, reason: 'repo-map-vs-exploration' })
         return out
       } catch (error) {
         return `Error building map: ${error.message}`
@@ -476,11 +506,11 @@ export function apply(ctx) {
             results.ok = false
             const errLines = (e.stdout || e.stderr || '').split('\n').filter(l => l.match(/error|fail|Error|FAIL/)).slice(0, 5)
             const customFail = JSON.stringify({ ok: false, failures: errLines })
-            await recordTokenEvent({ tool: 'evo_verify', operation: 'verify-fail', file: filePath, cacheHit: false, actualText: customFail, baselineTokens: estimateTokens(customFail) + 200, savingType: 'estimated', reason: 'verify-failure-summary' })
+            await recordTokenEvent({ tool: 'evo_verify', operation: 'verify-fail', file: filePath, cacheHit: false, actualText: customFail, reason: 'verify-failure-summary' })
             return customFail
           }
           const customPass = JSON.stringify({ ok: true, hint: '[VERIFY] All checks passed.' })
-          await recordTokenEvent({ tool: 'evo_verify', operation: 'verify-pass', file: filePath, cacheHit: false, actualText: customPass, baselineTokens: estimateTokens(customPass) + 300, savingType: 'estimated', reason: 'verify-silent-pass' })
+          await recordTokenEvent({ tool: 'evo_verify', operation: 'verify-pass', file: filePath, cacheHit: false, actualText: customPass, reason: 'verify-silent-pass' })
           return customPass
         }
 
@@ -514,11 +544,11 @@ export function apply(ctx) {
 
         if (results.ok) {
           const pass = JSON.stringify({ ok: true, hint: '[VERIFY] All checks passed.' })
-          await recordTokenEvent({ tool: 'evo_verify', operation: 'verify-pass', file: filePath, cacheHit: false, actualText: pass, baselineTokens: estimateTokens(pass) + 300, savingType: 'estimated', reason: 'verify-silent-pass' })
+          await recordTokenEvent({ tool: 'evo_verify', operation: 'verify-pass', file: filePath, cacheHit: false, actualText: pass, reason: 'verify-silent-pass' })
           return pass
         }
         const fail = JSON.stringify(results)
-        await recordTokenEvent({ tool: 'evo_verify', operation: 'verify-fail', file: filePath, cacheHit: false, actualText: fail, baselineTokens: estimateTokens(fail) + 200, savingType: 'estimated', reason: 'verify-failure-summary' })
+        await recordTokenEvent({ tool: 'evo_verify', operation: 'verify-fail', file: filePath, cacheHit: false, actualText: fail, reason: 'verify-failure-summary' })
         return fail
       } catch (error) {
         return `Error verifying: ${error.message}`
@@ -527,16 +557,17 @@ export function apply(ctx) {
   })
 
   // ═══════════════════════════════════════════════════════════════════════
-  // evo_stats — read token-stats JSONL and return compact savings summary
+  // evo_stats — summarize measured provider usage only
   // ═══════════════════════════════════════════════════════════════════════
   register({
     name: 'evo_stats',
-    description: 'Summarize token savings recorded in a token-stats JSONL file. Returns compact [token-stats] output for the current session/round.',
+    description: 'Summarize real provider token usage for this session. Pass baseline_session from an equivalent control run to calculate an auditable prompt-token saving rate.',
     parameters: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Optional path to token-stats JSONL. Defaults to E:\\新建文件夹\\token-stats\\token-stats.jsonl' },
-        round: { type: 'number', description: 'Optional roundId filter' },
+        path: { type: 'string', description: 'Optional path to token-stats JSONL. Defaults to the preset-local token-stats/token-stats.jsonl.' },
+        session_id: { type: 'string', description: 'Candidate session id. Defaults to the current session.' },
+        baseline_session: { type: 'string', description: 'Equivalent control session id. Enables savings calculation.' },
       },
       required: [],
       additionalProperties: false,
@@ -549,28 +580,44 @@ export function apply(ctx) {
         try {
           text = await readFile(statsPath, 'utf8')
         } catch {
-          return `[token-stats] no data at ${statsPath}`
+          return '[token-stats] no usage data available'
         }
         const rows = text.split('\n').map(l => l.trim()).filter(Boolean).map(l => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
-        const filtered = args.round != null ? rows.filter(r => Number(r.roundId) === Number(args.round)) : rows
+        const currentSession = ctx.get('agent')?.session?.id
+        const candidateSession = String(args.session_id || currentSession || '')
+        if (!candidateSession) return '[token-stats] session_id is required outside an agent session'
         const num = (v) => Number(v) || 0
-        const sum = (k) => filtered.reduce((n, r) => n + num(r[k]), 0)
-        const baseline = sum('baselineTokens')
-        const actual = sum('actualTokens')
-        const saved = sum('savedTokens')
-        const hits = filtered.filter(r => r.cacheHit).length
-        const total = filtered.length
-        const rate = baseline > 0 ? (100 * saved / baseline).toFixed(1) : '0.0'
-        const hitRate = total > 0 ? (100 * hits / total).toFixed(1) : '0.0'
-        const byTool = {}
-        for (const r of filtered) {
-          const t = r.tool || 'unknown'
-          byTool[t] = (byTool[t] || 0) + num(r.savedTokens)
+        const summarize = (sessionId) => {
+          const usage = rows.filter(r => r.kind === 'llm-usage' && String(r.sessionId) === String(sessionId))
+          const sum = (key) => usage.reduce((n, r) => n + num(r[key]), 0)
+          return {
+            sessionId: String(sessionId), steps: usage.length,
+            presets: [...new Set(usage.map(r => r.preset || 'unknown'))],
+            providers: [...new Set(usage.map(r => r.provider || 'unknown'))],
+            models: [...new Set(usage.map(r => r.model || 'unknown'))],
+            inputTokens: sum('inputTokens'), cacheReadTokens: sum('cacheReadTokens'),
+            cacheWriteTokens: sum('cacheWriteTokens'), promptTokens: sum('promptTokens'),
+            outputTokens: sum('outputTokens'), reasoningTokens: sum('reasoningTokens'),
+          }
         }
-        const top = Object.entries(byTool).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k, v]) => `${k}=${v}T`).join(' ')
+        const availableSessions = [...new Set(rows.filter(r => r.kind === 'llm-usage').map(r => String(r.sessionId)))].slice(-20)
+        const candidate = summarize(candidateSession)
+        if (candidate.steps === 0) return JSON.stringify({ candidate, availableSessions, note: 'No provider usage was recorded for this session.' })
+        if (!args.baseline_session) return JSON.stringify({ candidate, availableSessions, measurement: 'provider-reported', note: 'Pass baseline_session from an equivalent control run to calculate savings.' })
+        const baseline = summarize(args.baseline_session)
+        if (baseline.steps === 0 || baseline.promptTokens === 0) return JSON.stringify({ candidate, baseline, note: 'Baseline has no usable provider prompt-token data.' })
+        const sameRoute = JSON.stringify(candidate.providers) === JSON.stringify(baseline.providers)
+          && JSON.stringify(candidate.models) === JSON.stringify(baseline.models)
+        if (!sameRoute || candidate.providers.includes('unknown') || candidate.models.includes('unknown')) {
+          return JSON.stringify({ candidate, baseline, availableSessions, note: 'Provider/model metadata differ or are unavailable; no saving rate was calculated.' })
+        }
+        const savedPromptTokens = baseline.promptTokens - candidate.promptTokens
         return JSON.stringify({
-          events: total, actualTokens: actual, baselineTokens: baseline, savedTokens: saved,
-          savingRate: Number(rate), cacheHits: hits, cacheHitRate: Number(hitRate), byTool: top,
+          candidate, baseline, availableSessions, measurement: 'provider-reported',
+          savedPromptTokens,
+          savingRate: Number((100 * savedPromptTokens / baseline.promptTokens).toFixed(2)),
+          formula: '(baseline.promptTokens - candidate.promptTokens) / baseline.promptTokens',
+          comparability: 'Valid only when task, model, provider configuration, initial context, and completion criteria match.',
         })
       } catch (error) {
         return `Error reading token stats: ${error.message}`

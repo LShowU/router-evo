@@ -1,6 +1,6 @@
-﻿/**
+/**
  * router-bootstrap: task-aware reasoning-mode router with a continuous
- * react鈫攕pec axis.
+ * react↔spec axis.
  *
  * Reads the session's first user message, classifies the task into a
  * continuous mode in [0,1] (0 = spec plan-first, 1 = react doer), and on the
@@ -10,7 +10,7 @@
  * so resume/reload keeps it.
  *
  * The agent can read and tune its own routing through `dev_router_status` and
- * `dev_router_mode` (self-optimization loop) 鈥?mode accepts band names
+ * `dev_router_mode` (self-optimization loop) — mode accepts band names
  * (spec/spec-lean/balanced/react-lean/react), 0-100 numbers, or 0.0-1.0.
  *
  * Zero external imports on purpose: relative preset rows resolve bare
@@ -41,7 +41,7 @@ function extractText(data) {
     .join('\n')
 }
 
-/** Minimal spec 鈫?JSON Schema compiler (subset of defineTool's work). */
+/** Minimal spec → JSON Schema compiler (subset of defineTool's work). */
 function toJsonSchema(spec) {
   const properties = {}
   const required = []
@@ -61,11 +61,11 @@ export function apply(ctx, config) {
   const firstUserText = new Map() // session id -> first REAL user message text
   const firstAssemblySeen = new Set() // only the first model request is token-lean
 
-  // 鈹€鈹€ 璺敱妯″紡锛坴0.2.0 鍛藉悕锛岀敤鎴峰畾涔夛級鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-  // standard锛堥粯璁わ紝鏂帮級: RL 鎺ュ彛杩樺師鈥斺€旈杞彧鏈?RL 璁粌鍙?+ shell/str_replace_editor锛?
-  //   妯″瀷"鎯充竴娈点€佸仛涓€娈?锛堝疄娴?25 姝?/ 24 宸ュ叿璋冪敤 / 浜у嚭鏂囦欢锛夈€?
-  // spec锛堟棫锛? 娣卞害鎬濊€冧紭鍏堚€斺€斿垎绫?persona锛坵7/REACT/SPEC锛? 淇濈暀鍏ㄩ儴 sections锛?
-  //   妯″瀷棣栬疆闀挎€濈淮閾撅紙101K 鎺ㄧ悊 0 琛屽姩鏄叾鐗瑰緛锛屼笉鏄己闄凤級銆?
+  // ── 路由模式（v0.2.0 命名，用户定义）───────────────────────────────────────
+  // standard（默认，新）: RL 接口还原——首轮只有 RL 训练句 + shell/str_replace_editor，
+  //   模型"想一段、做一段"（实测 25 步 / 24 工具调用 / 产出文件）。
+  // spec（旧）: 深度思考优先——分类 persona（w7/REACT/SPEC）+ 保留全部 sections，
+  //   模型首轮长思维链（101K 推理 0 行动是其特征，不是缺陷）。
   const routerMode = config.routerMode === 'spec' ? 'spec' : 'standard'
   const RL_PERSONA = 'You are a helpful software engineer assistant.'
 
@@ -80,8 +80,8 @@ export function apply(ctx, config) {
   /** Return only the smallest useful first-turn tool surface. */
   function leanFirstCore(text, available) {
     const value = String(text || '').toLowerCase()
-    const command = /杩愯|鎵ц|鍛戒护|powershell|pwsh|shell|terminal|npm |pnpm |yarn |git |娴嬭瘯|缂栬瘧|鍚姩/.test(value)
-    const code = /浠ｇ爜|鏂囦欢|鑴氭湰|椤圭洰|浠撳簱|浠ｇ爜|淇敼|缂栬緫|淇|bug|error|鎶ラ敊|閲嶆瀯|瀹炵幇|鍐欎竴涓獆娣诲姞|鍒犻櫎|readme|typescript|javascript|python|go |rust/.test(value)
+    const command = /运行|执行|命令|powershell|pwsh|shell|terminal|npm |pnpm |yarn |git |测试|编译|启动/.test(value)
+    const code = /代码|文件|脚本|项目|仓库|代码|修改|编辑|修复|bug|error|报错|重构|实现|写一个|添加|删除|readme|typescript|javascript|python|go |rust/.test(value)
     const core = new Set()
     if (command) {
       if (available.has('pwsh')) core.add('pwsh')
@@ -112,11 +112,11 @@ export function apply(ctx, config) {
     if (firstAssemblySeen.has(session.id)) return assembled
     firstAssemblySeen.add(session.id)
 
-    // 鈹€鈹€ 妯″紡鍒嗘淳 鈹€鈹€
-    // standard锛圧L 鎺ュ彛杩樺師锛? 棣栬疆 system = 鍙湁 RL 璁粌鍙ワ紱韬唤/Web 瀹氫綅/宸ュ叿寮曞/
-    // 瑙勫垯 sections 鍏ㄩ儴绉婚櫎锛坢inimal 鐨?complete:true 璇箟锛屽疄娴?46 瀛楃 system 鈫?
-    // 25 姝ヨ凯浠ｅ伐浣滄祦锛夈€?
-    // spec锛堟繁搴︽€濊€冧紭鍏堬級: 鍒嗙被 persona + 淇濈暀鍏ㄩ儴 sections锛堥杞秴闀挎€濈淮閾炬槸鐗瑰緛锛夈€?
+    // ── 模式分派 ──
+    // standard（RL 接口还原）: 首轮 system = 只有 RL 训练句；身份/Web 定位/工具引导/
+    // 规则 sections 全部移除（minimal 的 complete:true 语义，实测 46 字符 system →
+    // 25 步迭代工作流）。
+    // spec（深度思考优先）: 分类 persona + 保留全部 sections（首轮超长思维链是特征）。
     let sections
     let core
     let persona
@@ -166,7 +166,7 @@ export function apply(ctx, config) {
     if (text && !firstUserText.has(session.id)) firstUserText.set(session.id, text)
   })
 
-  // 鈹€鈹€ router visibility & tuning (agent self-optimization) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+  // ── router visibility & tuning (agent self-optimization) ────────────────
   const registerTool = (tool) => {
     ctx.effect(() => ctx.tools.register({
       ...tool,
@@ -198,7 +198,7 @@ export function apply(ctx, config) {
       const mode = overrides.get(session.id) ?? sessionMode(session)
       const modelId = currentAgent()?.options?.model
       return [
-        `router-mode=${routerMode} (standard=RL鎺ュ彛杩樺師 / spec=娣卞害鎬濊€冧紭鍏?`,
+        `router-mode=${routerMode} (standard=RL接口还原 / spec=深度思考优先)`,
         `mode=${fmtMode(mode)} (band=${bandFor(mode)})`,
         `persona=${personaFor(mode, modelId).replace(/\n/g, ' / ')}`,
         `core=[${coreFor(mode).join(', ')}]`,
@@ -221,14 +221,14 @@ export function apply(ctx, config) {
       if (parsed === 'auto') overrides.delete(session.id)
       else overrides.set(session.id, parsed === 'weak' ? 'weak' : clamp01(parsed))
       const current = overrides.get(session.id) ?? sessionMode(session)
-      return `mode=${fmtMode(current)} (band=${bandFor(current)}) 鈥?next request applies`
+      return `mode=${fmtMode(current)} (band=${bandFor(current)}) — next request applies`
     },
   })
 
-  // 鈹€鈹€ mode-isolated subagent: run a task in a DIFFERENT reasoning mode,
+  // ── mode-isolated subagent: run a task in a DIFFERENT reasoning mode,
   //    without touching this session's trajectory (P6 showed tail persona
   //    is ineffective; DSH's native subagent inherits this persona, so the
-  //    only working isolation is a fresh LLM call with its own system). 鈹€鈹€
+  //    only working isolation is a fresh LLM call with its own system). ──
   registerTool({
     name: 'dev_mode_subagent',
     description: 'Run one task in a DIFFERENT reasoning mode than this session, in a fresh isolated context (own system prompt). The current session trajectory is untouched. Mode: spec (plan-first) / weak (internal routing) / react (doer) / balanced. Returns the subagent\'s answer text.',
@@ -267,7 +267,7 @@ export function apply(ctx, config) {
         return `subagent error: ${error && error.message ? error.message : String(error)}`
       }
       const head = text.slice(0, 3000)
-      return `[mode-subagent ${bandFor(parsed)} | reasoning ${reasoningChars} chars]\n${head}${text.length > 3000 ? '\n鈥?truncated)' : ''}`
+      return `[mode-subagent ${bandFor(parsed)} | reasoning ${reasoningChars} chars]\n${head}${text.length > 3000 ? '\n…(truncated)' : ''}`
     },
   })
 
@@ -283,4 +283,3 @@ export function apply(ctx, config) {
     return session === undefined ? undefined : [...agents.values()].find((a) => a.session === session)
   }
 }
-
